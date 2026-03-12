@@ -1,9 +1,6 @@
-import streamlit as st
-import pandas as pd
-import google.generativeai as genai
-from sklearn.feature_extraction.text import TfidfVectorizer
-from sklearn.metrics.pairwise import cosine_similarity
 import os
+import json
+from datetime import datetime, timedelta
 
 # --- PAGE CONFIGURATION ---
 st.set_page_config(page_title="Soporte Técnico AI", page_icon="✨", layout="wide")
@@ -124,6 +121,39 @@ def get_top_tickets(query, df, vectorizer, tfidf_matrix, top_n=12):
     return context_str
 
 
+# --- QUOTA TRACKING LOGIC ---
+USAGE_FILE = "api_usage.json"
+
+def load_usage():
+    if os.path.exists(USAGE_FILE):
+        with open(USAGE_FILE, "r") as f:
+            return json.load(f)
+    return {"calls": []}
+
+def save_usage(usage):
+    with open(USAGE_FILE, "w") as f:
+        json.dump(usage, f)
+
+def record_call():
+    usage = load_usage()
+    now = datetime.now().isoformat()
+    usage["calls"].append(now)
+    # Mantener solo las últimas 24 horas para no inflar el archivo
+    cutoff = (datetime.now() - timedelta(days=1)).isoformat()
+    usage["calls"] = [t for t in usage["calls"] if t > cutoff]
+    save_usage(usage)
+
+def get_usage_stats():
+    usage = load_usage()
+    now = datetime.now()
+    one_min_ago = (now - timedelta(minutes=1)).isoformat()
+    one_day_ago = (now - timedelta(days=1)).isoformat()
+    
+    rpm = len([t for t in usage["calls"] if t > one_min_ago])
+    rpd = len([t for t in usage["calls"] if t > one_day_ago])
+    
+    return rpm, rpd
+
 # --- INITIALIZATION & SECURITY ---
 EXCEL_FILE = "Bd  dato.xlsx"
 df = load_data(EXCEL_FILE)
@@ -143,7 +173,29 @@ if "messages" not in st.session_state:
 with st.sidebar:
     st.image("https://cdn-icons-png.flaticon.com/512/4712/4712035.png", width=80)
     st.markdown("### ✨ Soporte Premium")
-    st.info("Asistente inteligente optimizado para resolución de tickets técnicos.")
+    
+    # Dashboard de Cuotas
+    st.markdown("---")
+    st.markdown("#### 📊 Límites de API (Capa Gratis)")
+    rpm, rpd = get_usage_stats()
+    
+    # RPM Progress
+    rpm_limit = 15
+    rpm_perc = min(rpm / rpm_limit, 1.0)
+    st.write(f"Consultas por Minuto: {rpm}/{rpm_limit}")
+    st.progress(rpm_perc)
+    
+    # RPD Progress
+    rpd_limit = 1500
+    rpd_perc = min(rpd / rpd_limit, 1.0)
+    st.write(f"Consultas por Día: {rpd}/{rpd_limit}")
+    st.progress(rpd_perc)
+    
+    if rpm >= rpm_limit:
+        st.error("⚠️ Límite por minuto alcanzado. Espera un momento.")
+    if rpd >= rpd_limit:
+        st.error("🚫 Límite diario agotado.")
+
     st.markdown("---")
     if st.button("Reiniciar Conversación"):
         st.session_state.messages = []
@@ -180,7 +232,7 @@ if prompt := st.chat_input("Describe tu problema técnico..."):
                 context = get_top_tickets(prompt, df, vectorizer, tfidf_matrix, top_n=12)
             
                 genai.configure(api_key=API_KEY)
-                model = genai.GenerativeModel('gemini-1.5-flash') # Updated to stable flash
+                model = genai.GenerativeModel('gemini-1.5-flash')
             
                 system_prompt = f"""
 Eres un agente de soporte técnico experto de nivel Senior. 
@@ -201,9 +253,15 @@ INSTRUCCIONES DE RESPUESTA:
                 response = model.generate_content(system_prompt)
                 full_response = response.text
                 
+                # Registrar llamada exitosa
+                record_call()
+                
             message_placeholder.markdown(full_response)
             st.session_state.messages.append({"role": "assistant", "content": full_response})
 
         except Exception as e:
-            st.error(f"Error en el procesamiento: {e}")
+            if "429" in str(e) or "quota" in str(e).lower():
+                st.error("🚨 **Límite de consultas alcanzado.** Has llegado al tope de la capa gratuita de Google AI Studio por el momento. Por favor, espera unos minutos o intenta mañana.")
+            else:
+                st.error(f"Error en el procesamiento: {e}")
 
