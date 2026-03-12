@@ -78,8 +78,11 @@ def get_top_tickets(query, df, vectorizer, tfidf_matrix, top_n=12):
 EXCEL_FILE = "Bd  dato.xlsx"
 df = load_data(EXCEL_FILE)
 
-# Carga de API Key desde Secrets (Seguro)
-API_KEY = st.secrets.get("GOOGLE_API_KEY")
+# Entrada de API Key en el Sidebar (Solicitado por el usuario)
+api_key_input = st.sidebar.text_input("Ingresa tu Google Gemini API Key", type="password")
+
+# Prioridad: Entrada Manual > Secrets de Streamlit
+API_KEY = api_key_input or st.secrets.get("GOOGLE_API_KEY")
 
 if not df.empty:
     vectorizer, tfidf_matrix = get_vectorizer_and_matrix(df)
@@ -102,7 +105,7 @@ for msg in st.session_state.messages:
 # --- CHAT INPUT & PROCESSING ---
 if prompt := st.chat_input("Escribe tu problema aquí (ej. 'Error al conectar base de datos')"):
     if not API_KEY:
-        st.error("Error: Configure su 'GOOGLE_API_KEY' en los Secrets de Streamlit.")
+        st.error("Por favor, ingresa tu API Key de Gemini en la barra lateral para continuar.")
         st.stop()
         
     if df.empty:
