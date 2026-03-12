@@ -163,9 +163,8 @@ def get_usage_stats():
 EXCEL_FILE = "Bd  dato.xlsx"
 df = load_data(EXCEL_FILE)
 
-# API Key (Manejo Seguro)
-# IMPORTANTE: Configura tu clave en "Secrets" de Streamlit Cloud para evitar bloqueos.
-INTERNAL_API_KEY = "" 
+# API Key (Configurada en código por solicitud del usuario)
+INTERNAL_API_KEY = "AIzaSyAmqhqNOX24XSTBhoED-zDdByXkF-NTVH4" 
 API_KEY = st.secrets.get("GOOGLE_API_KEY") or os.environ.get("GOOGLE_API_KEY") or INTERNAL_API_KEY
 
 if not df.empty:
