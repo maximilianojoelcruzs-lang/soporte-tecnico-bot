@@ -4,88 +4,26 @@ import google.generativeai as genai
 from sklearn.feature_extraction.text import TfidfVectorizer
 from sklearn.metrics.pairwise import cosine_similarity
 import os
-import json
-from datetime import datetime, timedelta
 
 # --- PAGE CONFIGURATION ---
-st.set_page_config(page_title="Soporte Técnico AI", page_icon="✨", layout="wide")
+st.set_page_config(page_title="Soporte Técnico Bot", page_icon="🤖", layout="wide")
 
-# --- PREMIUM CSS STYLING ---
+# --- CUSTOM CSS FOR STYLING ---
 st.markdown("""
 <style>
-    /* Import Google Fonts */
-    @import url('https://fonts.googleapis.com/css2?family=Outfit:wght@300;400;600&family=Inter:wght@300;400;600&display=swap');
-
-    :root {
-        --primary-gradient: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
-        --accent-color: #a29bfe;
-        --bg-dark: #0f111a;
-        --card-bg: rgba(255, 255, 255, 0.05);
+    .chat-container {
+        border-radius: 10px;
+        padding: 15px;
+        margin-bottom: 10px;
     }
-
-    /* Global Styles */
-    .stApp {
-        background-color: var(--bg-dark);
-        font-family: 'Inter', sans-serif;
+    .user-msg {
+        background-color: #2b313e;
+        color: white;
     }
-
-    h1, h2, h3 {
-        font-family: 'Outfit', sans-serif;
-        background: linear-gradient(90deg, #fff 0%, #a29bfe 100%);
-        -webkit-background-clip: text;
-        -webkit-text-fill-color: transparent;
-        font-weight: 600;
+    .bot-msg {
+        background-color: #1a1c23;
+        color: white;
     }
-
-    /* Glassmorphism Chat Containers */
-    .stChatMessage {
-        background-color: var(--card-bg) !important;
-        border-radius: 20px !important;
-        border: 1px solid rgba(255, 255, 255, 0.1) !important;
-        padding: 20px !important;
-        margin-bottom: 15px !important;
-        backdrop-filter: blur(10px);
-        transition: transform 0.3s ease;
-    }
-
-    .stChatMessage:hover {
-        transform: translateY(-2px);
-        border-color: rgba(162, 155, 254, 0.3) !important;
-    }
-
-    /* Sidebar Styling */
-    [data-testid="stSidebar"] {
-        background-color: rgba(15, 17, 26, 0.95);
-        border-right: 1px solid rgba(255, 255, 255, 0.05);
-    }
-
-    /* Input Field */
-    .stChatInputContainer {
-        padding-bottom: 2rem !important;
-    }
-
-    .stChatInput {
-        border-radius: 15px !important;
-        border: 1px solid rgba(255, 255, 255, 0.1) !important;
-        background-color: rgba(255, 255, 255, 0.05) !important;
-    }
-
-    /* Custom Avatar/Icons */
-    .stAvatar {
-        background: var(--primary-gradient) !important;
-    }
-
-    /* Hide Streamlit elements */
-    #MainMenu {visibility: hidden;}
-    footer {visibility: hidden;}
-    header {visibility: hidden;}
-
-    /* Animations */
-    @keyframes fadeIn {
-        from { opacity: 0; transform: translateY(10px); }
-        to { opacity: 1; transform: translateY(0); }
-    }
-    .stChatMessage { animation: fadeIn 0.5s ease-out; }
 </style>
 """, unsafe_allow_html=True)
 
@@ -94,119 +32,66 @@ st.markdown("""
 @st.cache_data
 def load_data(file_path):
     try:
+        # Load the Excel file
         df = pd.read_excel(file_path)
+        # Ensure 'Titulo' and 'Comentario' exist, filling NaNs
         if 'Titulo' not in df.columns or 'Comentario' not in df.columns:
-            st.error("Error: Estructura de Excel no válida.")
+            st.error("El archivo Excel debe contener las columnas 'Titulo' y 'Comentario'.")
             return pd.DataFrame()
         
         df['Titulo'] = df['Titulo'].fillna('')
         df['Comentario'] = df['Comentario'].fillna('')
+        
+        # Create a combined text for vectorization
         df['combined_text'] = df['Titulo'] + " " + df['Comentario']
         return df
     except Exception as e:
-        st.error(f"Error cargando base de datos: {e}")
+        st.error(f"Error cargando el archivo Excel: {e}")
         return pd.DataFrame()
 
+# Initialize Vectorizer for fast filtering
 @st.cache_resource
 def get_vectorizer_and_matrix(df):
-    vectorizer = TfidfVectorizer(stop_words=None)
+    vectorizer = TfidfVectorizer(stop_words=None) # We can add spanish stop words if needed
     tfidf_matrix = vectorizer.fit_transform(df['combined_text'])
     return vectorizer, tfidf_matrix
 
+# Function to get top K relevant tickets
 def get_top_tickets(query, df, vectorizer, tfidf_matrix, top_n=12):
     query_vec = vectorizer.transform([query])
     similarities = cosine_similarity(query_vec, tfidf_matrix).flatten()
     top_indices = similarities.argsort()[-top_n:][::-1]
     
+    # Filter the exact top tickets
     top_tickets = df.iloc[top_indices]
+    
+    # Create a string representation for the LLM
     context_str = ""
-    for _, row in top_tickets.iterrows():
-        context_str += f"- Problema: {row['Titulo']}\n  Solución: {row['Comentario']}\n\n"
+    for i, row in top_tickets.iterrows():
+        context_str += f"- Problema (Título): {row['Titulo']}\n"
+        context_str += f"  Solución/Comentario: {row['Comentario']}\n\n"
         
     return context_str
 
 
-# --- QUOTA TRACKING LOGIC ---
-USAGE_FILE = "api_usage.json"
-
-def load_usage():
-    if os.path.exists(USAGE_FILE):
-        with open(USAGE_FILE, "r") as f:
-            return json.load(f)
-    return {"calls": []}
-
-def save_usage(usage):
-    with open(USAGE_FILE, "w") as f:
-        json.dump(usage, f)
-
-def record_call():
-    usage = load_usage()
-    now = datetime.now().isoformat()
-    usage["calls"].append(now)
-    # Mantener solo las últimas 24 horas para no inflar el archivo
-    cutoff = (datetime.now() - timedelta(days=1)).isoformat()
-    usage["calls"] = [t for t in usage["calls"] if t > cutoff]
-    save_usage(usage)
-
-def get_usage_stats():
-    usage = load_usage()
-    now = datetime.now()
-    one_min_ago = (now - timedelta(minutes=1)).isoformat()
-    one_day_ago = (now - timedelta(days=1)).isoformat()
-    
-    rpm = len([t for t in usage["calls"] if t > one_min_ago])
-    rpd = len([t for t in usage["calls"] if t > one_day_ago])
-    
-    return rpm, rpd
-
-# --- INITIALIZATION & SECURITY ---
+# --- INITIALIZATION ---
 EXCEL_FILE = "Bd  dato.xlsx"
 df = load_data(EXCEL_FILE)
 
-# API Key (Cargada desde Streamlit Secrets para mayor seguridad)
-INTERNAL_API_KEY = "" 
-API_KEY = st.secrets.get("GOOGLE_API_KEY") or os.environ.get("GOOGLE_API_KEY") or INTERNAL_API_KEY
+# Carga de API Key desde Secrets (Seguro)
+API_KEY = st.secrets.get("GOOGLE_API_KEY")
 
 if not df.empty:
     vectorizer, tfidf_matrix = get_vectorizer_and_matrix(df)
 
+# Initialize Session State for Chat History
 if "messages" not in st.session_state:
     st.session_state.messages = []
 
-# --- UI LAYOUT ---
-with st.sidebar:
-    st.image("https://cdn-icons-png.flaticon.com/512/4712/4712035.png", width=80)
-    st.markdown("### ✨ Soporte Premium")
-    
-    # Dashboard de Cuotas
-    st.markdown("---")
-    st.markdown("#### 📊 Límites de API (Capa Gratis)")
-    rpm, rpd = get_usage_stats()
-    
-    # RPM Progress
-    rpm_limit = 15
-    rpm_perc = min(rpm / rpm_limit, 1.0)
-    st.write(f"Consultas por Minuto: {rpm}/{rpm_limit}")
-    st.progress(rpm_perc)
-    
-    # RPD Progress
-    rpd_limit = 1500
-    rpd_perc = min(rpd / rpd_limit, 1.0)
-    st.write(f"Consultas por Día: {rpd}/{rpd_limit}")
-    st.progress(rpd_perc)
-    
-    if rpm >= rpm_limit:
-        st.error("⚠️ Límite por minuto alcanzado. Espera un momento.")
-    if rpd >= rpd_limit:
-        st.error("🚫 Límite diario agotado.")
-
-    st.markdown("---")
-    if st.button("Reiniciar Conversación"):
-        st.session_state.messages = []
-        st.rerun()
 
 st.title("🤖 Asistente de Soporte Técnico")
-st.markdown("##### Experto en resolución basada en historial técnico.")
+st.markdown("Soy tu agente de soporte. Describe el error o problema que tienes y buscaré la mejor solución basada en nuestro historial de tickets.")
+
 
 # --- CHAT DISPLAY ---
 for msg in st.session_state.messages:
@@ -215,15 +100,16 @@ for msg in st.session_state.messages:
 
 
 # --- CHAT INPUT & PROCESSING ---
-if prompt := st.chat_input("Describe tu problema técnico..."):
+if prompt := st.chat_input("Escribe tu problema aquí (ej. 'Error al conectar base de datos')"):
     if not API_KEY:
-        st.error("Error crítico: Configuración de API no encontrada.")
+        st.error("Error: Configure su 'GOOGLE_API_KEY' en los Secrets de Streamlit.")
         st.stop()
         
     if df.empty:
-        st.error("Base de datos no disponible.")
+        st.error("No se pudo cargar la base de datos de conocimiento.")
         st.stop()
         
+    # Append user message to chat history
     st.session_state.messages.append({"role": "user", "content": prompt})
     with st.chat_message("user"):
         st.markdown(prompt)
@@ -232,40 +118,42 @@ if prompt := st.chat_input("Describe tu problema técnico..."):
         message_placeholder = st.empty()
         
         try:
-            with st.spinner("Analizando historial y generando solución..."):
+            # 1. Retrieve top 12 tickets based on user prompt
+            with st.spinner("Buscando soluciones previas..."):
                 context = get_top_tickets(prompt, df, vectorizer, tfidf_matrix, top_n=12)
             
-                genai.configure(api_key=API_KEY)
-                model = genai.GenerativeModel('gemini-1.5-flash')
+            # 2. Configure Gemini GenAI
+            genai.configure(api_key=API_KEY)
+            model = genai.GenerativeModel('gemini-1.5-flash')
             
-                system_prompt = f"""
-Eres un agente de soporte técnico experto de nivel Senior. 
-Tu misión es resolver el problema del usuario de forma profesional, clara y estructurada.
+            # 3. Build the prompt
+            system_prompt = f"""
+Eres un agente de soporte técnico experto, formal y lógico. 
+Tu objetivo es ayudar al usuario a resolver su problema de software basándote EXCLUSIVAMENTE en el historial de tickets previos que te proporcionaré como contexto.
 
-DATOS DEL HISTORIAL (TU FUENTE DE VERDAD):
+Instrucciones:
+1. Analiza el problema del usuario.
+2. Revisa el historial de tickets para ver si hay un error similar y cómo se solucionó (fíjate en la sección 'Solución/Comentario' que son las respuestas que se han dado).
+3. Si encuentras una solución relevante, explícasela al usuario de manera clara, estructurada y formal, como si fueras un profesional de soporte.
+4. Puedes decir algo como "Este error se solucionó de esta manera:" y dar los pasos o la lógica.
+5. Si no encuentras nada relevante en el contexto proporcionado, pide más detalles cordialmente o dile que este error específico no parece estar documentado.
+
+Contexto (Historial de los 12 tickets más relevantes):
 {context}
 
-PROBLEMA ACTUAL:
+Problema del Usuario:
 {prompt}
-
-INSTRUCCIONES DE RESPUESTA:
-1. Sé directo y profesional.
-2. Si el historial tiene la solución, preséntala paso a paso.
-3. Si no hay una coincidencia exacta, usa tu conocimiento técnico para dar una guía lógica basada en el contexto recibido.
-4. Mantén un tono cordial y experto en todo momento.
 """
+            # 4. Get response from Gemini
+            with st.spinner("Generando respuesta..."):
                 response = model.generate_content(system_prompt)
                 full_response = response.text
                 
-                # Registrar llamada exitosa
-                record_call()
-                
+            # Display response
             message_placeholder.markdown(full_response)
+            
+            # Save to session state
             st.session_state.messages.append({"role": "assistant", "content": full_response})
 
         except Exception as e:
-            if "429" in str(e) or "quota" in str(e).lower():
-                st.error("🚨 **Límite de consultas alcanzado.** Has llegado al tope de la capa gratuita de Google AI Studio por el momento. Por favor, espera unos minutos o intenta mañana.")
-            else:
-                st.error(f"Error en el procesamiento: {e}")
-
+            st.error(f"Ocurrió un error al procesar la solicitud: {e}")
