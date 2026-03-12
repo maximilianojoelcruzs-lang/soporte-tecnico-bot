@@ -163,9 +163,9 @@ def get_usage_stats():
 EXCEL_FILE = "Bd  dato.xlsx"
 df = load_data(EXCEL_FILE)
 
-# API Key Oculta Internamente
-INTERNAL_API_KEY = "AIzaSyAmqhqNOX24XSTBhoED-zDdByXkF-NTVH4"
-# Prioridad: Secretos de Streamlit > Variable de Entorno > Clave Interna
+# API Key (Manejo Seguro)
+# Se recomienda configurar esto en st.secrets o variables de entorno
+INTERNAL_API_KEY = "" 
 API_KEY = st.secrets.get("GOOGLE_API_KEY") or os.environ.get("GOOGLE_API_KEY") or INTERNAL_API_KEY
 
 if not df.empty:
