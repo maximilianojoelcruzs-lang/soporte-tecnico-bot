@@ -1,148 +1,110 @@
 import streamlit as st
 import pandas as pd
 import google.generativeai as genai
-from sklearn.feature_extraction.text import TfidfVectorizer
-from sklearn.metrics.pairwise import cosine_similarity
 import os
 import time
+import numpy as np
+from sklearn.metrics.pairwise import cosine_similarity
 
 # --- PAGE CONFIGURATION ---
 st.set_page_config(
-    page_title="Soporte Técnico Bot | Premium Edition",
+    page_title="Soporte Técnico Bot | Intelligence Edition",
     page_icon="🤖",
-    layout="centered" # Centered for a more focused feel
+    layout="centered"
 )
 
 # --- PREMIUM CSS ---
 st.markdown("""
 <style>
     @import url('https://fonts.googleapis.com/css2?family=Inter:wght@400;600&display=swap');
-    
-    html, body, [class*="css"] {
-        font-family: 'Inter', sans-serif;
-    }
-    
-    .main {
-        background-color: #0e1117;
-    }
-    
-    /* Glassmorphism Sidebar */
-    [data-testid="stSidebar"] {
-        background-color: rgba(26, 28, 35, 0.8);
-        backdrop-filter: blur(10px);
-        border-right: 1px solid rgba(255, 255, 255, 0.1);
-    }
-    
-    /* Chat Message Bubbles */
-    .chat-message-container {
-        border-radius: 15px;
-        padding: 1.5rem;
-        margin-bottom: 1.5rem;
-        border: 1px solid rgba(255, 255, 255, 0.05);
-        transition: transform 0.2s ease;
-    }
-    
-    .chat-message-container:hover {
-        transform: translateY(-2px);
-    }
-    
-    .stChatMessage {
-        background-color: transparent !important;
-        border: none !important;
-    }
-    
-    /* Input Field Styling */
-    .stChatInputContainer {
-        border-radius: 20px !important;
-        border: 1px solid rgba(255, 255, 255, 0.1) !important;
-        background-color: rgba(255, 255, 255, 0.05) !important;
-    }
-    
+    html, body, [class*="css"] { font-family: 'Inter', sans-serif; }
+    .main { background-color: #0e1117; }
+    [data-testid="stSidebar"] { background-color: rgba(26, 28, 35, 0.8); backdrop-filter: blur(10px); }
     h1 {
         background: linear-gradient(90deg, #4facfe 0%, #00f2fe 100%);
         -webkit-background-clip: text;
         -webkit-text-fill-color: transparent;
-        font-weight: 600;
-        text-align: center;
+        font-weight: 600; text-align: center;
     }
 </style>
 """, unsafe_allow_html=True)
 
-
-# --- DATA LOADING & CACHING ---
+# --- DATA LOADING & EMBEDDINGS ---
 @st.cache_data
 def load_data(file_path):
     try:
         df = pd.read_excel(file_path)
-        if 'Titulo' not in df.columns or 'Comentario' not in df.columns:
-            st.error("El archivo Excel debe contener las columnas 'Titulo' y 'Comentario'.")
-            return pd.DataFrame()
-        
         df['Titulo'] = df['Titulo'].fillna('')
         df['Comentario'] = df['Comentario'].fillna('')
         df['combined_text'] = df['Titulo'] + " " + df['Comentario']
         return df
     except Exception as e:
-        st.error(f"Error cargando el archivo Excel: {e}")
+        st.error(f"Error: {e}")
         return pd.DataFrame()
 
-@st.cache_resource
-def get_vectorizer_and_matrix(df):
-    vectorizer = TfidfVectorizer(stop_words=None)
-    tfidf_matrix = vectorizer.fit_transform(df['combined_text'])
-    return vectorizer, tfidf_matrix
+def get_embeddings(texts, api_key):
+    genai.configure(api_key=api_key)
+    # Use text-embedding-004 for semantic search
+    result = genai.embed_content(
+        model="models/text-embedding-004",
+        content=texts,
+        task_type="retrieval_document"
+    )
+    return np.array(result['embedding'])
 
-def get_top_tickets(query, df, vectorizer, tfidf_matrix, top_n=12):
-    query_vec = vectorizer.transform([query])
-    similarities = cosine_similarity(query_vec, tfidf_matrix).flatten()
+@st.cache_resource
+def compute_database_embeddings(df, api_key):
+    with st.spinner("Inicializando cerebro semántico (esto solo ocurre una vez)..."):
+        # We process in chunks to avoid API limits if the DB is large
+        all_embeddings = []
+        batch_size = 50
+        for i in range(0, len(df), batch_size):
+            batch = df['combined_text'].iloc[i:i+batch_size].tolist()
+            all_embeddings.extend(get_embeddings(batch, api_key))
+        return np.array(all_embeddings)
+
+def get_relevant_context(query, df, db_embeddings, api_key, top_n=12):
+    # Get embedding for the user query
+    query_embedding = genai.embed_content(
+        model="models/text-embedding-004",
+        content=query,
+        task_type="retrieval_query"
+    )['embedding']
+    
+    # Calculate similarities
+    similarities = cosine_similarity([query_embedding], db_embeddings).flatten()
     top_indices = similarities.argsort()[-top_n:][::-1]
     
-    top_tickets = df.iloc[top_indices]
-    
     context_str = ""
-    for i, row in top_tickets.iterrows():
-        context_str += f"- Problema (Título): {row['Titulo']}\n"
-        context_str += f"  Solución/Comentario: {row['Comentario']}\n\n"
-        
+    for i in top_indices:
+        row = df.iloc[i]
+        context_str += f"- Título: {row['Titulo']}\n  Solución: {row['Comentario']}\n\n"
     return context_str
-
 
 # --- INITIALIZATION ---
 EXCEL_FILE = "Bd  dato.xlsx"
 df = load_data(EXCEL_FILE)
-
-if not df.empty:
-    vectorizer, tfidf_matrix = get_vectorizer_and_matrix(df)
-
-if "messages" not in st.session_state:
-    st.session_state.messages = []
-
-# --- API KEY HANDLING (Secrets or Sidebar) ---
 api_key = os.environ.get("GOOGLE_API_KEY") or st.secrets.get("GOOGLE_API_KEY")
 
 if not api_key:
     api_key = st.sidebar.text_input("Ingresa tu Google Gemini API Key", type="password")
-    if not api_key:
-        st.sidebar.info("Para que la app funcione sin pedir la clave, configúrala en el panel de Streamlit Secrets.")
 
-st.title("🤖 Asistente de Soporte Técnico")
-st.markdown("<p style='text-align: center; color: #888;'>Desarrollado para ofrecer soluciones rápidas basadas en el historial técnico.</p>", unsafe_allow_html=True)
+if api_key and not df.empty:
+    db_embeddings = compute_database_embeddings(df, api_key)
 
+if "messages" not in st.session_state:
+    st.session_state.messages = []
 
-# --- CHAT DISPLAY ---
+st.title("🤖 Asistente de Soporte Inteligente")
+st.markdown("<p style='text-align: center; color: #888;'>Ahora con búsqueda semántica: entiendo sinónimos y conceptos.</p>", unsafe_allow_html=True)
+
 for msg in st.session_state.messages:
     with st.chat_message(msg["role"]):
         st.markdown(msg["content"])
 
-
-# --- CHAT INPUT & PROCESSING ---
-if prompt := st.chat_input("¿En qué puedo ayudarte hoy?"):
+if prompt := st.chat_input("¿En qué puedo ayudarte?"):
     if not api_key:
-        st.warning("Por favor, ingresa tu API Key de Gemini en la barra lateral para continuar.")
-        st.stop()
-        
-    if df.empty:
-        st.error("No se pudo cargar la base de datos de conocimiento.")
+        st.warning("Configura tu API Key.")
         st.stop()
         
     st.session_state.messages.append({"role": "user", "content": prompt})
@@ -151,41 +113,45 @@ if prompt := st.chat_input("¿En qué puedo ayudarte hoy?"):
 
     with st.chat_message("assistant"):
         message_placeholder = st.empty()
-        full_response = ""
         
         try:
-            # 1. Retrieve top 12 tickets
-            context = get_top_tickets(prompt, df, vectorizer, tfidf_matrix, top_n=12)
+            # --- PHASE 1: SEARCH TOP 12 ---
+            context = get_relevant_context(prompt, df, db_embeddings, api_key, top_n=12)
             
-            # 2. Configure Gemini GenAI
             genai.configure(api_key=api_key)
-            model = genai.GenerativeModel('gemini-1.5-flash') # Using stable 1.5 flash
+            model = genai.GenerativeModel('gemini-1.5-flash')
             
-            # 3. Build the prompt
-            system_prompt = f"""
-Eres un agente de soporte técnico experto, formal y lógico. 
-Tu objetivo es ayudar al usuario a resolver su problema de software basándote EXCLUSIVAMENTE en el historial de tickets previos que te proporcionaré como contexto.
+            check_prompt = f"""
+Basándote en estos tickets, ¿existe una solución directa o muy relacionada para el problema: "{prompt}"?
+Responde solo 'SI' o 'NO'.
 
-Instrucciones:
-1. Analiza el problema del usuario.
-2. Revisa el historial de tickets para encontrar soluciones relevantes en la sección 'Solución/Comentario'.
-3. Si encuentras una solución, explícala paso a paso de manera clara y profesional.
-4. Si el problema no está documentado en el contexto, pide cordialmente más detalles o indica que no hay registro previo de ese error específico.
+Tickets:
+{context}
+"""
+            check_response = model.generate_content(check_prompt).text.strip().upper()
+            
+            # --- PHASE 2: FALLBACK (DEEP SEARCH) if needed ---
+            if "NO" in check_response:
+                with st.status("Búsqueda profunda activada... Escaneando toda la base de datos."):
+                    # Search TOP 50 for a broader view
+                    context = get_relevant_context(prompt, df, db_embeddings, api_key, top_n=50)
+                    system_instructions = "No encontré una solución exacta en los primeros resultados, pero analizando toda la base de datos, esto es lo más relevante que encontré:"
+            else:
+                system_instructions = "He encontrado información relevante en nuestro historial:"
 
-Contexto (Historial de tickets):
+            # final generation
+            final_prompt = f"""
+{system_instructions}
+Eres un experto en soporte. Responde formalmente basado en este contexto:
 {context}
 
-Problema del Usuario:
-{prompt}
+Pregunta: {prompt}
 """
-            # 4. Get Streaming Response
-            response = model.generate_content(system_prompt, stream=True)
-            
+            response = model.generate_content(final_prompt, stream=True)
+            full_response = ""
             for chunk in response:
                 full_response += chunk.text
                 message_placeholder.markdown(full_response + "▌")
-                time.sleep(0.01) # Small delay for smoother streaming feel
-            
             message_placeholder.markdown(full_response)
             st.session_state.messages.append({"role": "assistant", "content": full_response})
 
