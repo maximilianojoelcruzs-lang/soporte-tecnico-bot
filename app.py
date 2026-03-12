@@ -4,6 +4,7 @@ import google.generativeai as genai
 import os
 import time
 import numpy as np
+from sklearn.feature_extraction.text import TfidfVectorizer
 from sklearn.metrics.pairwise import cosine_similarity
 
 # --- PAGE CONFIGURATION ---
@@ -29,7 +30,7 @@ st.markdown("""
 </style>
 """, unsafe_allow_html=True)
 
-# --- DATA LOADING & EMBEDDINGS ---
+# --- DATA LOADING ---
 @st.cache_data
 def load_data(file_path):
     try:
@@ -39,61 +40,87 @@ def load_data(file_path):
         df['combined_text'] = df['Titulo'] + " " + df['Comentario']
         return df
     except Exception as e:
-        st.error(f"Error: {e}")
+        st.error(f"Error cargando Excel: {e}")
         return pd.DataFrame()
 
-def get_embeddings(texts, api_key):
+# --- SEARCH LOGIC (EMBEDDINGS & TF-IDF) ---
+
+def try_get_embedding(text, model_name, task_type):
+    try:
+        return genai.embed_content(
+            model=model_name,
+            content=text,
+            task_type=task_type
+        )['embedding']
+    except:
+        return None
+
+def get_embeddings_resilient(texts, api_key):
     genai.configure(api_key=api_key)
-    # Try multiple common model names for compatibility
-    for model_name in ["models/text-embedding-004", "models/embedding-001"]:
-        try:
-            result = genai.embed_content(
-                model=model_name,
-                content=texts,
-                task_type="retrieval_document"
-            )
-            return np.array(result['embedding'])
-        except Exception:
-            continue
-    raise Exception("No se encontraron modelos de embeddings compatibles (404).")
+    # Try multiple common model names
+    for m_name in ["models/text-embedding-004", "models/embedding-001"]:
+        emb = try_get_embedding(texts, m_name, "retrieval_document")
+        if emb is not None:
+            return np.array(emb), m_name
+    return None, None
 
 @st.cache_resource
-def compute_database_embeddings(df, api_key):
-    with st.spinner("Inicializando cerebro semántico (esto solo ocurre una vez)..."):
-        # We process in chunks to avoid API limits if the DB is large
-        all_embeddings = []
-        batch_size = 50
-        for i in range(0, len(df), batch_size):
-            batch = df['combined_text'].iloc[i:i+batch_size].tolist()
-            all_embeddings.extend(get_embeddings(batch, api_key))
-        return np.array(all_embeddings)
+def prepare_search_engines(df, api_key):
+    """Initializes both Embeddings and TF-IDF as fallback"""
+    engines = {"type": "tfidf", "vectorizer": None, "matrix": None, "embeddings": None, "model": None}
+    
+    # 1. Try to initialize Embeddings
+    if api_key:
+        with st.spinner("Inicializando cerebro semántico..."):
+            try:
+                # We only check the first row to see if the model works
+                test_emb, active_model = get_embeddings_resilient([df['combined_text'].iloc[0]], api_key)
+                if active_model:
+                    # Compute all embeddings
+                    all_embs = []
+                    batch_size = 50
+                    for i in range(0, len(df), batch_size):
+                        batch = df['combined_text'].iloc[i:i+batch_size].tolist()
+                        batch_res, _ = get_embeddings_resilient(batch, api_key)
+                        all_embs.extend(batch_res)
+                    engines["type"] = "embeddings"
+                    engines["embeddings"] = np.array(all_embs)
+                    engines["model"] = active_model
+            except:
+                pass
 
-def get_relevant_context(query, df, db_embeddings, api_key, top_n=12):
-    # Get embedding for the user query using the same resilience
-    query_embedding = None
-    for model_name in ["models/text-embedding-004", "models/embedding-001"]:
+    # 2. Always prepare TF-IDF as fallback
+    vectorizer = TfidfVectorizer()
+    matrix = vectorizer.fit_transform(df['combined_text'])
+    engines["vectorizer"] = vectorizer
+    engines["matrix"] = matrix
+    
+    return engines
+
+def get_relevant_context_resilient(query, df, engines, api_key, top_n=12):
+    if engines["type"] == "embeddings" and api_key:
         try:
-            query_embedding = genai.embed_content(
-                model=model_name,
-                content=query,
-                task_type="retrieval_query"
-            )['embedding']
-            break
-        except Exception:
-            continue
+            query_emb = try_get_embedding(query, engines["model"], "retrieval_query")
+            if query_emb:
+                similarities = cosine_similarity([query_emb], engines["embeddings"]).flatten()
+                top_indices = similarities.argsort()[-top_n:][::-1]
+                context = ""
+                for i in top_indices:
+                    row = df.iloc[i]
+                    context += f"- Título: {row['Titulo']}\n  Solución: {row['Comentario']}\n\n"
+                return context, True
+        except:
+            pass
     
-    if query_embedding is None:
-        raise Exception("Fallo al generar embedding para la consulta.")
-    
-    # Calculate similarities
-    similarities = cosine_similarity([query_embedding], db_embeddings).flatten()
+    # Fallback to TF-IDF
+    query_vec = engines["vectorizer"].transform([query])
+    similarities = cosine_similarity(query_vec, engines["matrix"]).flatten()
     top_indices = similarities.argsort()[-top_n:][::-1]
-    
-    context_str = ""
+    context = ""
     for i in top_indices:
         row = df.iloc[i]
-        context_str += f"- Título: {row['Titulo']}\n  Solución: {row['Comentario']}\n\n"
-    return context_str
+        context += f"- Título: {row['Titulo']}\n  Solución: {row['Comentario']}\n\n"
+    return context, False
 
 # --- INITIALIZATION ---
 EXCEL_FILE = "Bd  dato.xlsx"
@@ -103,14 +130,17 @@ api_key = os.environ.get("GOOGLE_API_KEY") or st.secrets.get("GOOGLE_API_KEY")
 if not api_key:
     api_key = st.sidebar.text_input("Ingresa tu Google Gemini API Key", type="password")
 
-if api_key and not df.empty:
-    db_embeddings = compute_database_embeddings(df, api_key)
+engines = None
+if not df.empty:
+    engines = prepare_search_engines(df, api_key)
 
 if "messages" not in st.session_state:
     st.session_state.messages = []
 
+# --- UI ---
 st.title("🤖 Asistente de Soporte Inteligente")
-st.markdown("<p style='text-align: center; color: #888;'>Ahora con búsqueda semántica: entiendo sinónimos y conceptos.</p>", unsafe_allow_html=True)
+mode_label = "🧠 Modo Semántico" if engines and engines["type"] == "embeddings" else "🔍 Modo Estándar (Fallback)"
+st.markdown(f"<p style='text-align: center; color: #888;'>{mode_label} activado.</p>", unsafe_allow_html=True)
 
 for msg in st.session_state.messages:
     with st.chat_message(msg["role"]):
@@ -118,7 +148,7 @@ for msg in st.session_state.messages:
 
 if prompt := st.chat_input("¿En qué puedo ayudarte?"):
     if not api_key:
-        st.warning("Configura tu API Key.")
+        st.warning("Configura tu API Key en la barra lateral.")
         st.stop()
         
     st.session_state.messages.append({"role": "user", "content": prompt})
@@ -129,39 +159,27 @@ if prompt := st.chat_input("¿En qué puedo ayudarte?"):
         message_placeholder = st.empty()
         
         try:
-            # --- PHASE 1: SEARCH TOP 12 ---
-            context = get_relevant_context(prompt, df, db_embeddings, api_key, top_n=12)
+            # 1. Search Context
+            context, is_semantic = get_relevant_context_resilient(prompt, df, engines, api_key, top_n=12)
             
             genai.configure(api_key=api_key)
             model = genai.GenerativeModel('gemini-1.5-flash')
             
-            check_prompt = f"""
-Basándote en estos tickets, ¿existe una solución directa o muy relacionada para el problema: "{prompt}"?
-Responde solo 'SI' o 'NO'.
-
-Tickets:
-{context}
-"""
+            # 2. Check Relevance and Generate Response
+            check_prompt = f"Basándote en estos tickets, ¿existe una solución para: '{prompt}'? Responde solo SI o NO.\n\nContexto:\n{context}"
             check_response = model.generate_content(check_prompt).text.strip().upper()
             
-            # --- PHASE 2: FALLBACK (DEEP SEARCH) if needed ---
+            # Deep search if No
             if "NO" in check_response:
-                with st.status("Búsqueda profunda activada... Escaneando toda la base de datos."):
-                    # Search TOP 50 for a broader view
-                    context = get_relevant_context(prompt, df, db_embeddings, api_key, top_n=50)
-                    system_instructions = "No encontré una solución exacta en los primeros resultados, pero analizando toda la base de datos, esto es lo más relevante que encontré:"
+                with st.status("Búsqueda profunda activada..."):
+                    context, _ = get_relevant_context_resilient(prompt, df, engines, api_key, top_n=50)
+                system_instr = "Analizando todo el historial disponible para encontrar una pista..."
             else:
-                system_instructions = "He encontrado información relevante en nuestro historial:"
+                system_instr = "He encontrado esta información relevante en el historial:"
 
-            # final generation
-            final_prompt = f"""
-{system_instructions}
-Eres un experto en soporte. Responde formalmente basado en este contexto:
-{context}
-
-Pregunta: {prompt}
-"""
+            final_prompt = f"{system_instr}\n\nContexto:\n{context}\n\nUsuario: {prompt}"
             response = model.generate_content(final_prompt, stream=True)
+            
             full_response = ""
             for chunk in response:
                 full_response += chunk.text
@@ -170,4 +188,4 @@ Pregunta: {prompt}
             st.session_state.messages.append({"role": "assistant", "content": full_response})
 
         except Exception as e:
-            st.error(f"Error: {e}")
+            st.error(f"Error generando respuesta: {e}")
