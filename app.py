@@ -57,11 +57,14 @@ def try_get_embedding(text, model_name, task_type):
 
 def get_embeddings_resilient(texts, api_key):
     genai.configure(api_key=api_key)
-    # Try multiple common model names
-    for m_name in ["models/text-embedding-004", "models/embedding-001"]:
-        emb = try_get_embedding(texts, m_name, "retrieval_document")
+    # Use the model name discovered via diagnostics
+    model_name = "models/gemini-embedding-001"
+    try:
+        emb = try_get_embedding(texts, model_name, "retrieval_document")
         if emb is not None:
-            return np.array(emb), m_name
+            return np.array(emb), model_name
+    except:
+        pass
     return None, None
 
 @st.cache_resource
@@ -100,6 +103,7 @@ def prepare_search_engines(df, api_key):
 def get_relevant_context_resilient(query, df, engines, api_key, top_n=12):
     if engines["type"] == "embeddings" and api_key:
         try:
+            # Use the same model as initialization
             query_emb = try_get_embedding(query, engines["model"], "retrieval_query")
             if query_emb:
                 similarities = cosine_similarity([query_emb], engines["embeddings"]).flatten()
@@ -168,8 +172,8 @@ if prompt := st.chat_input("¿En qué puedo ayudarte?"):
             context, is_semantic = get_relevant_context_resilient(prompt, df, engines, api_key, top_n=12)
             
             genai.configure(api_key=api_key)
-            # Use 'gemini-1.5-flash' directly which is the most compatible name
-            model = genai.GenerativeModel('gemini-1.5-flash')
+            # Use 'gemini-flash-latest' which is available for this API Key
+            model = genai.GenerativeModel('gemini-flash-latest')
             
             # 2. Check Relevance and Generate Response
             check_prompt = f"Basándote en estos tickets, ¿existe una solución para: '{prompt}'? Responde solo SI o NO.\n\nContexto:\n{context}"
