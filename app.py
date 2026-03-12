@@ -237,7 +237,7 @@ if prompt := st.chat_input("Describe tu problema técnico..."):
                 context = get_top_tickets(prompt, df, vectorizer, tfidf_matrix, top_n=12)
             
                 genai.configure(api_key=API_KEY)
-                model = genai.GenerativeModel('gemini-1.5-flash-latest')
+                model = genai.GenerativeModel('gemini-1.5-flash')
             
                 system_prompt = f"""
 Eres un agente de soporte técnico experto de nivel Senior. 
