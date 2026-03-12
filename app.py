@@ -127,7 +127,7 @@ if prompt := st.chat_input("Escribe tu problema aquí (ej. 'Error al conectar ba
             
             # 2. Configure Gemini GenAI
             genai.configure(api_key=API_KEY)
-            model = genai.GenerativeModel('gemini-1.5-flash')
+            model = genai.GenerativeModel('gemini-2.5-flash')
             
             # 3. Build the prompt
             system_prompt = f"""
