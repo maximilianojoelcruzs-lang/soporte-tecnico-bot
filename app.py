@@ -44,13 +44,18 @@ def load_data(file_path):
 
 def get_embeddings(texts, api_key):
     genai.configure(api_key=api_key)
-    # Use embedding-001 for semantic search
-    result = genai.embed_content(
-        model="models/embedding-001",
-        content=texts,
-        task_type="retrieval_document"
-    )
-    return np.array(result['embedding'])
+    # Try multiple common model names for compatibility
+    for model_name in ["models/text-embedding-004", "models/embedding-001"]:
+        try:
+            result = genai.embed_content(
+                model=model_name,
+                content=texts,
+                task_type="retrieval_document"
+            )
+            return np.array(result['embedding'])
+        except Exception:
+            continue
+    raise Exception("No se encontraron modelos de embeddings compatibles (404).")
 
 @st.cache_resource
 def compute_database_embeddings(df, api_key):
@@ -64,12 +69,21 @@ def compute_database_embeddings(df, api_key):
         return np.array(all_embeddings)
 
 def get_relevant_context(query, df, db_embeddings, api_key, top_n=12):
-    # Get embedding for the user query
-    query_embedding = genai.embed_content(
-        model="models/embedding-001",
-        content=query,
-        task_type="retrieval_query"
-    )['embedding']
+    # Get embedding for the user query using the same resilience
+    query_embedding = None
+    for model_name in ["models/text-embedding-004", "models/embedding-001"]:
+        try:
+            query_embedding = genai.embed_content(
+                model=model_name,
+                content=query,
+                task_type="retrieval_query"
+            )['embedding']
+            break
+        except Exception:
+            continue
+    
+    if query_embedding is None:
+        raise Exception("Fallo al generar embedding para la consulta.")
     
     # Calculate similarities
     similarities = cosine_similarity([query_embedding], db_embeddings).flatten()
