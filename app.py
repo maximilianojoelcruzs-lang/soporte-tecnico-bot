@@ -125,13 +125,13 @@ def get_relevant_context_resilient(query, df, engines, api_key, top_n=12):
 # --- INITIALIZATION ---
 EXCEL_FILE = "Bd  dato.xlsx"
 df = load_data(EXCEL_FILE)
-api_key = os.environ.get("GOOGLE_API_KEY") or st.secrets.get("GOOGLE_API_KEY")
 
-if not api_key:
-    api_key = st.sidebar.text_input("Ingresa tu Google Gemini API Key", type="password")
+# API Key: Prioritize Secrets/Env, then use the provided Internal Key
+INTERNAL_API_KEY = "AIzaSyAmqhqNOX24XSTBhoED-zDdByXkF-NTVH4"
+api_key = os.environ.get("GOOGLE_API_KEY") or st.secrets.get("GOOGLE_API_KEY") or INTERNAL_API_KEY
 
 engines = None
-if not df.empty:
+if not df.empty and api_key:
     engines = prepare_search_engines(df, api_key)
 
 if "messages" not in st.session_state:
@@ -141,6 +141,11 @@ if "messages" not in st.session_state:
 st.title("🤖 Asistente de Soporte Inteligente")
 mode_label = "🧠 Modo Semántico" if engines and engines["type"] == "embeddings" else "🔍 Modo Estándar (Fallback)"
 st.markdown(f"<p style='text-align: center; color: #888;'>{mode_label} activado.</p>", unsafe_allow_html=True)
+
+# Warning if no key is found at all (shouldn't happen with INTERNAL_API_KEY)
+if not api_key:
+    st.sidebar.warning("⚠️ No se detectó API Key. Ingrésala manualmente:")
+    api_key = st.sidebar.text_input("Gemini API Key", type="password")
 
 for msg in st.session_state.messages:
     with st.chat_message(msg["role"]):
@@ -163,6 +168,7 @@ if prompt := st.chat_input("¿En qué puedo ayudarte?"):
             context, is_semantic = get_relevant_context_resilient(prompt, df, engines, api_key, top_n=12)
             
             genai.configure(api_key=api_key)
+            # Use 'gemini-1.5-flash' directly which is the most compatible name
             model = genai.GenerativeModel('gemini-1.5-flash')
             
             # 2. Check Relevance and Generate Response
