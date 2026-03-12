@@ -44,9 +44,9 @@ def load_data(file_path):
 
 def get_embeddings(texts, api_key):
     genai.configure(api_key=api_key)
-    # Use text-embedding-004 for semantic search
+    # Use embedding-001 for semantic search
     result = genai.embed_content(
-        model="models/text-embedding-004",
+        model="models/embedding-001",
         content=texts,
         task_type="retrieval_document"
     )
@@ -66,7 +66,7 @@ def compute_database_embeddings(df, api_key):
 def get_relevant_context(query, df, db_embeddings, api_key, top_n=12):
     # Get embedding for the user query
     query_embedding = genai.embed_content(
-        model="models/text-embedding-004",
+        model="models/embedding-001",
         content=query,
         task_type="retrieval_query"
     )['embedding']
